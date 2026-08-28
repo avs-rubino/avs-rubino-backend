@@ -20,7 +20,6 @@ app.set('trust proxy', 1);
 
 const allowedOrigins = [
   'https://avsrubino.it',
-  'https://www.avsrubino.it',
   'https://avs-rubino.it',
   'https://ambulatorioveterinariospecialisticorubino.it',
   'https://vet-clinics-493413.web.app',
