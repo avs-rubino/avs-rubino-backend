@@ -21,7 +21,7 @@ Questo repository è uno dei 5 moduli dell'ecosistema digitale dell'Ambulatorio 
 ## 🚀 Funzionalità Principali
 - **Gestione Contenuti**: Espone API pubbliche per la lettura degli orari e API protette (CRUD) per la scrittura di avvisi ed eccezioni orarie.
 - **Transazioni Atomiche (Anti-Lost Update)**:
-  - `POST /api/admin/content/override`: Inserimento atomico di eccezioni orarie con **risoluzione automatica dei conflitti/sovrapposizioni** (se l'intervallo si sovrappone a una o più eccezioni esistenti, queste vengono rimosse e sostituite) e **Garbage Collection silente** (se sono presenti $\ge 5$ eccezioni già scadute, la più remota viene rimossa dallo storico senza avvisi per il client).
+  - `POST /api/admin/content/override`: Inserimento atomico di eccezioni orarie con **risoluzione automatica dei conflitti/sovrapposizioni** (se l'intervallo si sovrappone a una o più eccezioni esistenti, queste vengono rimosse e sostituite), **Garbage Collection silente** (rimozione storico in background) e **Auto-Merge Orari** (in caso di payload parziali, il backend completa gli orari mancanti recuperando gli standard).
   - `DELETE /api/admin/content/override/by-date?clinicLocation=...&date=YYYY-MM-DD`: Rimozione transazionale di tutte le eccezioni associate o sovrapposte alla data specificata per la clinica indicata.
 - **Gestione Uploads**: Integrazione con `@google-cloud/storage` e `multer` per l'invio sicuro di immagini nella galleria clinica.
 - **Autenticazione**: Integrazione nativa con Firebase Admin SDK per la verifica stateless dei token JWT (Bearer).
