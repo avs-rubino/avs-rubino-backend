@@ -17,6 +17,96 @@ const getRomeDateString = () => {
   return formatter.format(new Date());
 };
 
+// Funzione helper per ottenere il giorno della settimana ('lunedi', ..., 'domenica') per una data YYYY-MM-DD nel fuso di Roma
+const getDayKeyFromDateString = (dateStr) => {
+  if (!dateStr || typeof dateStr !== 'string') return 'lunedi';
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  const weekday = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Rome',
+    weekday: 'long',
+  }).format(d).toLowerCase();
+
+  const mapping = {
+    monday: 'lunedi',
+    tuesday: 'martedi',
+    wednesday: 'mercoledi',
+    thursday: 'giovedi',
+    friday: 'venerdi',
+    saturday: 'sabato',
+    sunday: 'domenica',
+  };
+  return mapping[weekday] || 'lunedi';
+};
+
+// Converte stringa "HH:MM" in minuti dall'inizio della giornata
+const toMinutes = (timeStr) => {
+  if (!timeStr || typeof timeStr !== 'string') return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+
+const MIDDAY_THRESHOLD = 750; // 12:30 in minuti
+
+// Esegue il merge dell'eccezione con i default settimanali se uno dei due orari è omesso
+const mergeOverrideWithDefaults = (override, defaults) => {
+  if (!override || override.closed) {
+    return override;
+  }
+
+  const hasStart = typeof override.startTime === 'string' && override.startTime.trim() !== '';
+  const hasEnd = typeof override.endTime === 'string' && override.endTime.trim() !== '';
+
+  if (hasStart && hasEnd) {
+    return override;
+  }
+
+  const dayKey = getDayKeyFromDateString(override.dateFrom);
+  const matchingDefaults = Array.isArray(defaults)
+    ? defaults.filter(d => Array.isArray(d.days) && d.days.includes(dayKey) && !d.closed)
+    : [];
+
+  if (matchingDefaults.length === 0) {
+    return override;
+  }
+
+  let mergedStartTime = override.startTime;
+  let mergedEndTime = override.endTime;
+
+  if (hasStart && !hasEnd) {
+    const startMins = toMinutes(override.startTime);
+    const isMorning = startMins < MIDDAY_THRESHOLD;
+
+    const slot = matchingDefaults.find(d => {
+      if (!d.startTime) return false;
+      const defStartMins = toMinutes(d.startTime);
+      return isMorning ? defStartMins < MIDDAY_THRESHOLD : defStartMins >= MIDDAY_THRESHOLD;
+    }) || matchingDefaults[0];
+
+    if (slot && slot.endTime) {
+      mergedEndTime = slot.endTime;
+    }
+  } else if (!hasStart && hasEnd) {
+    const endMins = toMinutes(override.endTime);
+    const isMorning = endMins <= MIDDAY_THRESHOLD;
+
+    const slot = matchingDefaults.find(d => {
+      if (!d.endTime) return false;
+      const defEndMins = toMinutes(d.endTime);
+      return isMorning ? defEndMins <= MIDDAY_THRESHOLD : defEndMins > MIDDAY_THRESHOLD;
+    }) || matchingDefaults[0];
+
+    if (slot && slot.startTime) {
+      mergedStartTime = slot.startTime;
+    }
+  }
+
+  return {
+    ...override,
+    ...(mergedStartTime ? { startTime: mergedStartTime } : {}),
+    ...(mergedEndTime ? { endTime: mergedEndTime } : {}),
+  };
+};
+
 // GET all content
 router.get('/', async (req, res) => {
   try {
@@ -40,20 +130,21 @@ router.post('/', validateContent, async (req, res) => {
   }
 });
 
-// POST /override - Transazione atomica per salvare eccezioni con rimozione automatica conflitti e GC storico
+// POST /override - Transazione atomica per salvare eccezioni con rimozione automatica conflitti, merge default e GC storico
 router.post('/override', validatePostOverride, async (req, res) => {
-  const { clinicLocation, override } = req.body;
+  const { clinicLocation, override: rawOverride } = req.body;
 
   try {
     const generalInfoSnap = await collection.where('type', '==', 'general_info').limit(1).get();
     
     if (generalInfoSnap.empty) {
       // Crea il documento general_info se non esiste ancora
+      const finalOverride = mergeOverrideWithDefaults(rawOverride, []);
       const newDoc = {
         type: 'general_info',
         [clinicLocation]: {
           defaults: [],
-          overrides: [override],
+          overrides: [finalOverride],
         },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -62,7 +153,7 @@ router.post('/override', validatePostOverride, async (req, res) => {
       return res.status(201).json({
         success: true,
         message: 'Eccezione oraria salvata atomicamente',
-        override,
+        override: finalOverride,
         replacedPrevious: false,
         replacedCount: 0,
         id: docRef.id,
@@ -71,6 +162,7 @@ router.post('/override', validatePostOverride, async (req, res) => {
 
     const docRef = generalInfoSnap.docs[0].ref;
     let conflictingCount = 0;
+    let finalOverride = rawOverride;
 
     await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(docRef);
@@ -82,9 +174,12 @@ router.post('/override', validatePostOverride, async (req, res) => {
       const currentLoc = data[clinicLocation] || { defaults: [], overrides: [] };
       const existingOverrides = Array.isArray(currentLoc.overrides) ? currentLoc.overrides : [];
 
+      // Esegui il merge automatico dell'eccezione con i default settimanali
+      finalOverride = mergeOverrideWithDefaults(rawOverride, currentLoc.defaults || []);
+
       const today = getRomeDateString();
-      const newDateFrom = override.dateFrom;
-      const newDateTo = override.dateTo || override.dateFrom;
+      const newDateFrom = finalOverride.dateFrom;
+      const newDateTo = finalOverride.dateTo || finalOverride.dateFrom;
 
       // 1. Controllo sovrapposizioni/conflitti: existing.dateFrom <= new.dateTo AND existing.dateTo >= new.dateFrom
       const isConflicting = (existing) => {
@@ -98,8 +193,8 @@ router.post('/override', validatePostOverride, async (req, res) => {
       conflictingCount = conflicting.length;
       const remainingOverrides = existingOverrides.filter(o => !isConflicting(o));
 
-      // Inserimento della nuova eccezione
-      let updatedOverrides = [...remainingOverrides, override];
+      // Inserimento della nuova eccezione con merge completato
+      let updatedOverrides = [...remainingOverrides, finalOverride];
 
       // 2. Routine di Garbage Collection silente dello storico scaduto (se >= 5 scadute, rimuove la più vecchia)
       const isExpired = (item) => {
@@ -136,7 +231,7 @@ router.post('/override', validatePostOverride, async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Eccezione oraria salvata atomicamente',
-      override,
+      override: finalOverride,
       replacedPrevious: conflictingCount > 0,
       replacedCount: conflictingCount,
     });
@@ -229,5 +324,10 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({ error: 'Errore interno del server' });
   }
 });
+
+router._helpers = {
+  getDayKeyFromDateString,
+  mergeOverrideWithDefaults,
+};
 
 module.exports = router;

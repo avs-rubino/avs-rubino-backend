@@ -48,6 +48,18 @@ const postOverrideSchema = z.object({
     dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: 'dateTo deve essere nel formato YYYY-MM-DD' }).optional().nullable(),
     startTime: z.string().optional(),
     endTime: z.string().optional(),
+  }).superRefine((data, ctx) => {
+    if (!data.closed) {
+      const hasStart = typeof data.startTime === 'string' && data.startTime.trim() !== '';
+      const hasEnd = typeof data.endTime === 'string' && data.endTime.trim() !== '';
+      if (!hasStart && !hasEnd) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Se l'eccezione non è una chiusura (closed: true), è necessario specificare almeno un orario di inizio (startTime) o di fine (endTime)",
+          path: ['startTime'],
+        });
+      }
+    }
   }),
 });
 
@@ -91,5 +103,6 @@ module.exports = {
   validateContent,
   validateDeleteOverrideByDate,
   validatePostOverride,
+  postOverrideSchema,
 };
 
