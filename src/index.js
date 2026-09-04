@@ -1,13 +1,14 @@
 require('dotenv/config');
 const express = require('express');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 
 const contentRoutes = require('./routes/content');
 const uploadRoutes = require('./routes/upload');
 const publicRoutes = require('./routes/public');
-const authMiddleware = require('./middleware/auth');
+const authRoutes = require('./routes/auth');
+const usersRoutes = require('./routes/users');
+const { authMiddleware, requireSuperAdmin } = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
@@ -48,23 +49,9 @@ app.use(cors({
 
 app.use(express.json());
 
-// Rate Limiter per gli endpoint pubblici (max 100 richieste ogni 15 minuti)
-const publicLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Troppe richieste da questo IP, riprova più tardi.' }
-});
-
-// Rate Limiter per gli endpoint di amministrazione (max 30 richieste ogni 15 minuti)
-const adminLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Limite di operazioni admin raggiunto per questo IP, riprova più tardi.' }
-});
+// NOTA ARCHITETTURALE: Il Rate Limiting in-memory è stato rimosso per garantire statelessness
+// e compatibilità con lo scale-out orizzontale di Google Cloud Run. La protezione DDoS e il rate limiting
+// sono delegati a monte a Google Cloud Armor / GCP Load Balancer e Firebase App Check.
 
 // Health Check Endpoint (utilizzato da Cloud Run e Uptime Monitors)
 app.get('/health', (req, res) => {
@@ -75,9 +62,11 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.use('/api/admin/content', adminLimiter, authMiddleware, contentRoutes);
-app.use('/api/admin/upload', adminLimiter, authMiddleware, uploadRoutes);
-app.use('/api/public/content', publicLimiter, publicRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/admin/content', authMiddleware, contentRoutes);
+app.use('/api/admin/upload', authMiddleware, uploadRoutes);
+app.use('/api/admin/users', authMiddleware, requireSuperAdmin, usersRoutes);
+app.use('/api/public/content', publicRoutes);
 
 // Middleware di gestione errori centralizzata (deve essere l'ultimo app.use)
 app.use(errorHandler);
